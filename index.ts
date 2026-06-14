@@ -2,7 +2,7 @@
 // if you have bun installed with mise, the above shebang might not always work
 
 // I worked around it, by assigning the keyboard shortcut to a fixed path instead
-// kitty --single-instance /home/nikel/.local/share/mise/installs/bun/latest/bin/bun /home/nikel/projects/effect-garden/scripts/quick_open_code.ts
+// kitty --single-instance /home/nikel/.local/share/mise/installs/bun/latest/bin/bun /home/nikel/projects/qcode-effect-v4/dist/minified/index.js
 
 import * as BunChildProcessSpawner from '@effect/platform-bun/BunChildProcessSpawner'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
