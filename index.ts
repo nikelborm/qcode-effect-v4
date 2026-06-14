@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+/** biome-ignore-all lint/correctness/useHookAtTopLevel: because it's not React.js */
 // if you have bun installed with mise, the above shebang might not always work
 
 // I worked around it, by assigning the keyboard shortcut to a fixed path instead
@@ -86,7 +87,7 @@ const areSomeDependenciesMissing = Effect.gen(function* () {
 
 export const find = (args: string) => {
   const stream = (main: string, message: string) =>
-    Effect.map(ChildProcessSpawner.ChildProcessSpawner, spawner =>
+    ChildProcessSpawner.ChildProcessSpawner.useSync(spawner =>
       spawner.streamLines(
         ChildProcess.make(main, [PROJECTS_DIR, ...args.split(' ')]),
       ),
