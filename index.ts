@@ -198,16 +198,10 @@ const AppLayer = BunChildProcessSpawner.layer.pipe(
   Layer.provideMerge(BunPath.layer),
 )
 
-const beforeProgramCreated = performance.now()
-
 export const program = Effect.gen(function* () {
-  const astBefore = performance.now()
   if (yield* areSomeDependenciesMissing) return 1
-  const asaFTER = performance.now()
 
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-
-  const beforeFzfStarted = performance.now()
 
   const fzfProcess = yield* ChildProcess.make(
     'fzf',
@@ -227,8 +221,6 @@ export const program = Effect.gen(function* () {
     ),
   )
 
-  const afterFzfStarted = performance.now()
-
   const [fzfExitCode, selectedLine] = yield* Effect.all(
     [
       fzfProcess.exitCode,
@@ -237,15 +229,6 @@ export const program = Effect.gen(function* () {
     ],
     { concurrency: 'unbounded' },
   )
-  const afterFzfExited = performance.now()
-
-  yield* Effect.log({
-    beforeProgramCreated,
-    effectsBullshit: beforeFzfStarted - beforeProgramCreated,
-    fzfStartTime: afterFzfStarted - beforeFzfStarted,
-    fzfRuntimeDuration: afterFzfExited - afterFzfStarted,
-    PREFLIght: asaFTER - astBefore,
-  })
 
   if ((fzfExitCode as number) === 130) {
     yield* Effect.log('fzf canceled by user')

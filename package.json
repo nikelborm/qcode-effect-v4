@@ -6,6 +6,9 @@
   "devDependencies": {
     "@types/bun": "^1.3.14"
   },
+  "scripts": {
+    "build": "tsgo && rollup -c rollup.config.mts && chmod +x dist/minified/*"
+  },
   "peerDependencies": {
     "typescript": "^6.0.3"
   },
