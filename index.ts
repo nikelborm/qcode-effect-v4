@@ -4,39 +4,32 @@
 // I worked around it, by assigning the keyboard shortcut to a fixed path instead
 // kitty --single-instance /home/nikel/.local/share/mise/installs/bun/latest/bin/bun /home/nikel/projects/effect-garden/scripts/quick_open_code.ts
 
-// all of the dependencies are available on npm
-import { dedupStreamHashedSimple } from '@evadev/effect-helpers'
-import { prettyPrint } from 'effect-errors'
-
-import * as Command from '@effect/platform/Command'
-import * as CommandExecutor from '@effect/platform/CommandExecutor'
-import type { PlatformError } from '@effect/platform/Error'
-import * as Path from '@effect/platform/Path'
-import * as BunCommandExecutor from '@effect/platform-bun/BunCommandExecutor'
+import * as BunChildProcessSpawner from '@effect/platform-bun/BunChildProcessSpawner'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as BunPath from '@effect/platform-bun/BunPath'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
-import * as Ansi from '@effect/printer-ansi/Ansi'
-import * as Doc from '@effect/printer-ansi/AnsiDoc'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import { pipe } from 'effect/Function'
+import * as HashSet from 'effect/HashSet'
 import * as Layer from 'effect/Layer'
+import * as Path from 'effect/Path'
+import type { PlatformError } from 'effect/PlatformError'
 import * as Stream from 'effect/Stream'
+import * as ChildProcess from 'effect/unstable/process/ChildProcess'
+import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
 
 export const HOME = process.env['HOME'] ?? '/root'
 export const PROJECTS_DIR = `${HOME}/projects`
 export const DIR_ICON = ''
 export const WORKSPACE_ICON = ''
 
-const matchNotFound = <R, L>(error: PlatformError, onNotFound: R, other: L) =>
-  error._tag === 'SystemError' && error.reason === 'NotFound'
-    ? onNotFound
-    : other
+const isNotFound = (error: PlatformError) => error.reason._tag === 'NotFound'
 
-const logErrorMessageOnNotFoundError =
+const logErrorOnNotFound =
   (message: string) =>
-  <A extends PlatformError>(error: A) =>
-    matchNotFound(error, Effect.logError(message), Effect.void)
+  (error: PlatformError): Effect.Effect<void> =>
+    isNotFound(error) ? Effect.logError(message) : Effect.void
 
 export const PRUNE_DIRS = [
   ['node_modules', '__fixtures__', '__mocks__', '__pycache__', '__snapshots__'],
@@ -64,15 +57,17 @@ export const PRUNE_ARGS = PRUNE_DIRS.map(e => `-name ${e}`).join(' -o ')
 // TODO: add error message queue, so that it doesn't mess with fzf's on screen output
 
 const areSomeDependenciesMissing = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const depResults = yield* Effect.forEach(
     Object.entries({
       eza: 'modern ls replacement — https://github.com/eza-community/eza',
       bat: 'syntax-highlighting cat — https://github.com/sharkdp/bat',
     }),
     ([name, hint]) =>
-      Command.make('which', name).pipe(
-        Command.exitCode,
-        Effect.map(code => ({ name, hint, isPresent: code === 0 })),
+      pipe(
+        ChildProcess.make('which', [name]),
+        spawner.exitCode,
+        Effect.map(code => ({ name, hint, isPresent: (code as number) === 0 })),
       ),
     { concurrency: 'unbounded' },
   )
@@ -91,23 +86,20 @@ const areSomeDependenciesMissing = Effect.gen(function* () {
 
 export const find = (args: string) => {
   const stream = (main: string, message: string) =>
-    Command.make(main, PROJECTS_DIR, ...args.split(' ')).pipe(
-      Command.streamLines,
-      Stream.tapError(logErrorMessageOnNotFoundError(message)),
-    )
+    Effect.map(ChildProcessSpawner.ChildProcessSpawner, spawner =>
+      spawner.streamLines(
+        ChildProcess.make(main, [PROJECTS_DIR, ...args.split(' ')]),
+      ),
+    ).pipe(Stream.unwrap, Stream.tapError(logErrorOnNotFound(message)))
 
   return stream(
     'bfs',
     'Breadth-first finder (`bfs` binary) is not found. Read more here: https://github.com/tavianator/bfs, https://terminaltrove.com/bfs/. The script will attempt to fallback to find',
   ).pipe(
-    Stream.catchAll(error =>
-      matchNotFound(
-        error,
-        stream(
-          'find',
-          '`find` binary is not found. Read more here: https://www.man7.org/linux/man-pages/man1/find.1.html',
-        ),
-        Stream.fail(error),
+    Stream.catchIf(isNotFound, () =>
+      stream(
+        'find',
+        '`find` binary is not found. Read more here: https://www.man7.org/linux/man-pages/man1/find.1.html',
       ),
     ),
   )
@@ -126,14 +118,25 @@ export const dirAndCodeWorkspacePathsInProjectsRoot = find(
   '-maxdepth 1 -mindepth 1 ( -type d -o -name *.code-workspace )',
 )
 
-export const vscodeArgCandidates = Stream.mergeAll(
+const dedupStreamHashedSimple = <A, E, R>(
+  self: Stream.Stream<A, E, R>,
+): Stream.Stream<A, E, R> =>
+  Stream.mapAccum(
+    self,
+    () => HashSet.empty<A>(),
+    (alreadyEmitted, value) =>
+      HashSet.has(alreadyEmitted, value)
+        ? [alreadyEmitted, [] as A[]]
+        : [HashSet.add(alreadyEmitted, value), [value]],
+  )
+
+export const vscodeArgCandidates = pipe(
   [
     gitAndVsCodeDirPaths,
     packageJsonAndMiseTomlAndCodeWorkspacePaths,
     dirAndCodeWorkspacePathsInProjectsRoot,
   ],
-  { concurrency: 'unbounded' },
-).pipe(
+  Stream.mergeAll({ concurrency: 'unbounded' }),
   Stream.map(currentLine =>
     currentLine.endsWith('.code-workspace')
       ? currentLine
@@ -151,20 +154,22 @@ export const vscodeArgCandidates = Stream.mergeAll(
 export const hyperlink = (uri: string, text: string) =>
   `\x1b]8;;${uri}\x1b\\${text}\x1b]8;;\x1b\\`
 
-export const fzfPrettyCandidates = Effect.map(Path.Path, path =>
-  Stream.map(vscodeArgCandidates, entry =>
-    Doc.hcat([
-      Doc.text(entry.endsWith('/') ? DIR_ICON : WORKSPACE_ICON),
-      Doc.space,
-      Doc.text(path.relative(PROJECTS_DIR, entry)),
-      Doc.line,
-    ]).pipe(
-      Doc.annotate(entry.endsWith('/') ? Ansi.blue : Ansi.green),
-      Doc.render({ style: 'pretty' }),
-      rendered => hyperlink(`file://${entry}`, rendered),
-    ),
+const ansiBlue = (s: string) => `\x1b[34m${s}\x1b[0m`
+const ansiGreen = (s: string) => `\x1b[32m${s}\x1b[0m`
+
+export const fzfPrettyCandidates = vscodeArgCandidates.pipe(
+  Stream.mapEffect(vscodeArgCandidate =>
+    Path.Path.useSync(path => ({
+      path: path.relative(PROJECTS_DIR, vscodeArgCandidate),
+      isDir: vscodeArgCandidate.endsWith('/'),
+    })),
   ),
-).pipe(Stream.unwrap)
+  Stream.map(({ isDir, path }) => {
+    const color = isDir ? ansiBlue : ansiGreen
+    const icon = isDir ? DIR_ICON : WORKSPACE_ICON
+    return hyperlink(`file://${path}`, color(`${icon} ${path}\n`))
+  }),
+)
 
 // fzf replaces {2} with the raw relative path (second space-delimited field),
 // while the first icon is discarded.
@@ -188,9 +193,9 @@ else
   bat --style=plain --language=json --color=always "$path"
 fi`
 
-const AppLayer = Layer.merge(
-  BunCommandExecutor.layer.pipe(Layer.provide(BunFileSystem.layer)),
-  BunPath.layer,
+const AppLayer = BunChildProcessSpawner.layer.pipe(
+  Layer.provide(BunFileSystem.layer),
+  Layer.provideMerge(BunPath.layer),
 )
 
 const beforeProgramCreated = performance.now()
@@ -200,19 +205,23 @@ export const program = Effect.gen(function* () {
   if (yield* areSomeDependenciesMissing) return 1
   const asaFTER = performance.now()
 
-  const executor = yield* CommandExecutor.CommandExecutor
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+
   const beforeFzfStarted = performance.now()
-  const fzfProcess = yield* Command.make(
+
+  const fzfProcess = yield* ChildProcess.make(
     'fzf',
-    '--ansi',
-    '--delimiter= ',
-    '--preview-window=50%',
-    `--preview=${PREVIEW_CMD}`,
+    [
+      '--ansi',
+      '--delimiter= ',
+      '--preview-window=50%',
+      `--preview=${PREVIEW_CMD}`,
+    ],
+    { stderr: 'inherit' },
   ).pipe(
-    Command.stderr('inherit'),
-    executor.start,
+    spawner.spawn,
     Effect.tapError(
-      logErrorMessageOnNotFoundError(
+      logErrorOnNotFound(
         'Fuzzy finder (`fzf` binary) is not found. Read more here: https://github.com/junegunn/fzf.',
       ),
     ),
@@ -223,7 +232,7 @@ export const program = Effect.gen(function* () {
   const [fzfExitCode, selectedLine] = yield* Effect.all(
     [
       fzfProcess.exitCode,
-      fzfProcess.stdout.pipe(Stream.decodeText(), Stream.mkString),
+      fzfProcess.stdout.pipe(Stream.decodeText, Stream.mkString),
       Stream.run(Stream.encodeText(fzfPrettyCandidates), fzfProcess.stdin),
     ],
     { concurrency: 'unbounded' },
@@ -238,10 +247,10 @@ export const program = Effect.gen(function* () {
     PREFLIght: asaFTER - astBefore,
   })
 
-  if (fzfExitCode === 130) {
+  if ((fzfExitCode as number) === 130) {
     yield* Effect.log('fzf canceled by user')
     return 0
-  } else if (fzfExitCode !== 0) {
+  } else if ((fzfExitCode as number) !== 0) {
     yield* Effect.logError('fzf exited with non-zero code: ', fzfExitCode)
     return 1
   }
@@ -255,25 +264,25 @@ export const program = Effect.gen(function* () {
 
   const path = yield* Path.Path
 
-  const vscodeLauncherExitCode = yield* Command.make(
-    'code',
-    path.join(PROJECTS_DIR, relativePath),
-  ).pipe(
-    Command.stdout('inherit'),
-    Command.stderr('inherit'),
-    Command.exitCode,
+  const vscodeLauncherExitCode = yield* pipe(
+    ChildProcess.make('code', [path.join(PROJECTS_DIR, relativePath)], {
+      stdout: 'inherit',
+      stderr: 'inherit',
+    }),
+    spawner.exitCode,
     Effect.tapError(
-      logErrorMessageOnNotFoundError(
+      logErrorOnNotFound(
         'VS Code (`code` binary) is not found. Are you using VS Code Insiders?',
       ),
     ),
   )
 
-  if (vscodeLauncherExitCode !== 0) {
+  if ((vscodeLauncherExitCode as number) !== 0) {
     yield* Effect.logError(
       'vs code launcher exited with non-zero code: ',
       vscodeLauncherExitCode,
     )
+
     return 1
   }
 
@@ -282,16 +291,11 @@ export const program = Effect.gen(function* () {
   Effect.scoped,
   Effect.provide(AppLayer),
   Effect.withSpan(import.meta.file),
-  Effect.sandbox,
-  Effect.catchAll(e => {
-    console.error(prettyPrint(e))
-    return Effect.fail(e)
-  }),
 )
 
 if (import.meta.main)
   BunRuntime.runMain(program, {
-    teardown: (exit, onExit: (code: number) => void) => {
+    teardown: (exit, onExit) => {
       onExit(
         !Exit.isSuccess(exit) || typeof exit.value !== 'number'
           ? 1
