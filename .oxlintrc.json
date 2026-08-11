@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["oxlint-plugin-effect-imports"],
+  "rules": {
+    "effect-imports/named-to-namespace": "error"
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/dist-types/**",
+    "**/.next/**",
+    "**/build/**",
+    "**/built/**",
+    "**/.turbo/**"
+  ]
+}

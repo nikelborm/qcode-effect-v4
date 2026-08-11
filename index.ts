@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-/** biome-ignore-all lint/correctness/useHookAtTopLevel: because it's not React.js */
 // if you have bun installed with mise, the above shebang might not always work
 
 // I worked around it, by assigning the keyboard shortcut to a fixed path instead
@@ -9,281 +8,116 @@ import * as BunChildProcessSpawner from '@effect/platform-bun/BunChildProcessSpa
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as BunPath from '@effect/platform-bun/BunPath'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
+import * as BunStdio from '@effect/platform-bun/BunStdio'
+import * as BunTerminal from '@effect/platform-bun/BunTerminal'
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import { pipe } from 'effect/Function'
-import * as HashSet from 'effect/HashSet'
 import * as Layer from 'effect/Layer'
-import * as Path from 'effect/Path'
-import type { PlatformError } from 'effect/PlatformError'
-import * as Stream from 'effect/Stream'
-import * as ChildProcess from 'effect/unstable/process/ChildProcess'
+import * as CliArgument from 'effect/unstable/cli/Argument'
+import * as CliCommand from 'effect/unstable/cli/Command'
 import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
 
-export const HOME = process.env['HOME'] ?? '/root'
-export const PROJECTS_DIR = `${HOME}/projects`
-export const DIR_ICON = ''
-export const WORKSPACE_ICON = ''
+import { localMode } from './local.ts'
+import { runController } from './remote-controller.ts'
+import { runProvider } from './remote-provider.ts'
 
-const isNotFound = (error: PlatformError) => error.reason._tag === 'NotFound'
+// `Command.run` collapses every handler down to `Effect<void>`, discarding the
+// numeric code each mode returns. We stash that code here so the teardown below
+// can still read it out of the final `Exit` and pass it to `process.exit`.
 
-const logErrorOnNotFound =
-  (message: string) =>
-  (error: PlatformError): Effect.Effect<void> =>
-    isNotFound(error) ? Effect.logError(message) : Effect.void
+class ExitCodeHandler extends Context.Service<ExitCodeHandler>()(
+  'ExitCodeHandler',
+  {
+    make: Effect.gen(function* () {
+      const def = yield* Deferred.make<ChildProcessSpawner.ExitCode>()
 
-export const PRUNE_DIRS = [
-  ['node_modules', '__fixtures__', '__mocks__', '__pycache__', '__snapshots__'],
-  ['__test__', '__tests__', '.cache', '.cargo', '.claude', 'temporary', 'gen'],
-  ['.expo', '.gradle', '.husky', '.idea', '.netlify', '.next', '.nx', '.specs'],
-  ['.nyc_output', '.parcel-cache', 'fixtures', '.serverless', '.venv', 'out'],
-  ['integration-tests', '.swc', '.turbo', '.vercel', '.yarn', 'build', 'built'],
-  ['specs', 'target', 'temp', 'test', 'dist-types', 'tests', 'vendor', 'venv'],
-  ['temp_full_cache', '.docusaurus', 'coverage', 'generated', 'release', 'tmp'],
-  ['cache', 'classes', 'third_party', 'testing', 'storybook-static', 'dist'],
-  ['.pnpm-store', '.stryker-tmp', 'logs', 'output'],
-  // the last 3 here because they're too heavy. They will still be listed anyway
-  // because they're in root directory, we just wont search for subdirectories
-  ['firefox', 'mdn-content', 'base-ui'],
-].flat()
-
-export const README_FILES = ['README', 'Readme', 'readme']
-  .flatMap(r =>
-    ['', 'ru', 'RU', 'en', 'EN'].map(ext => (ext ? r + '.' + ext : r)),
-  )
-  .flatMap(r => ['', 'md', 'txt'].map(ext => (ext ? r + '.' + ext : r)))
-
-export const PRUNE_ARGS = PRUNE_DIRS.map(e => `-name ${e}`).join(' -o ')
-
-// TODO: add error message queue, so that it doesn't mess with fzf's on screen output
-
-const areSomeDependenciesMissing = Effect.gen(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  const depResults = yield* Effect.forEach(
-    Object.entries({
-      eza: 'modern ls replacement — https://github.com/eza-community/eza',
-      bat: 'syntax-highlighting cat — https://github.com/sharkdp/bat',
+      return {
+        codeFromEffect: <E, R>(
+          self: Effect.Effect<ChildProcessSpawner.ExitCode, E, R>,
+        ) =>
+          self.pipe(
+            Effect.flatMap(code => Deferred.into(Effect.succeed(code), def)),
+            Effect.onInterrupt(() =>
+              Deferred.succeed(def, ChildProcessSpawner.ExitCode(1)),
+            ),
+            Effect.asVoid,
+          ),
+        await: Deferred.await(def),
+      }
     }),
-    ([name, hint]) =>
-      pipe(
-        ChildProcess.make('which', [name]),
-        spawner.exitCode,
-        Effect.map(code => ({ name, hint, isPresent: (code as number) === 0 })),
-      ),
-    { concurrency: 'unbounded' },
-  )
+  },
+) {
+  // Build the layer yourself from the make effect
+  static readonly layer = Layer.effect(this, this.make)
 
-  const missingDeps = depResults.filter(r => !r.isPresent)
-
-  if (missingDeps.length > 0) {
-    for (const { name, hint } of missingDeps)
-      yield* Effect.logError(`Missing required tool '${name}': ${hint}`)
-
-    return true
-  }
-
-  return false
-})
-
-export const find = (args: string) => {
-  const stream = (main: string, message: string) =>
-    ChildProcessSpawner.ChildProcessSpawner.useSync(spawner =>
-      spawner.streamLines(
-        ChildProcess.make(main, [PROJECTS_DIR, ...args.split(' ')]),
-      ),
-    ).pipe(Stream.unwrap, Stream.tapError(logErrorOnNotFound(message)))
-
-  return stream(
-    'bfs',
-    'Breadth-first finder (`bfs` binary) is not found. Read more here: https://github.com/tavianator/bfs, https://terminaltrove.com/bfs/. The script will attempt to fallback to find',
-  ).pipe(
-    Stream.catchIf(isNotFound, () =>
-      stream(
-        'find',
-        '`find` binary is not found. Read more here: https://www.man7.org/linux/man-pages/man1/find.1.html',
-      ),
-    ),
-  )
+  static readonly codeFromEffect = <E, R>(
+    self: Effect.Effect<ChildProcessSpawner.ExitCode, E, R>,
+  ) => this.use(s => s.codeFromEffect(self))
+  static readonly await = this.use(s => s.await)
 }
 
-// SPACES around parentheses are important!!
-export const gitAndVsCodeDirPaths = find(
-  `-type d ( ${PRUNE_ARGS} ) -prune -o -type d ( -name .git -o -name .vscode ) -prune -print`,
-)
-
-export const packageJsonAndMiseTomlAndCodeWorkspacePaths = find(
-  `-type d ( ${PRUNE_ARGS} -o -name .git ) -prune -o -type f ( -name package.json -o -name mise.toml -o -name *.code-workspace ) -print`,
-)
-
-export const dirAndCodeWorkspacePathsInProjectsRoot = find(
-  '-maxdepth 1 -mindepth 1 ( -type d -o -name *.code-workspace )',
-)
-
-const dedupStreamHashedSimple = <A, E, R>(
-  self: Stream.Stream<A, E, R>,
-): Stream.Stream<A, E, R> =>
-  Stream.mapAccum(
-    self,
-    () => HashSet.empty<A>(),
-    (alreadyEmitted, value) =>
-      HashSet.has(alreadyEmitted, value)
-        ? [alreadyEmitted, [] as A[]]
-        : [HashSet.add(alreadyEmitted, value), [value]],
-  )
-
-export const vscodeArgCandidates = pipe(
-  [
-    gitAndVsCodeDirPaths,
-    packageJsonAndMiseTomlAndCodeWorkspacePaths,
-    dirAndCodeWorkspacePathsInProjectsRoot,
-  ],
-  Stream.mergeAll({ concurrency: 'unbounded' }),
-  Stream.map(currentLine =>
-    currentLine.endsWith('.code-workspace')
-      ? currentLine
-      : currentLine
-          .replace('package.json', '')
-          .replace('mise.toml', '')
-          .replace('.git', '')
-          .replace('.vscode', '')
-          // adds slash at the end
-          .replace(/[^/]+$/, '$&/'),
+const remoteCommand = CliCommand.make(
+  'remote',
+  {
+    host: CliArgument.string('host').pipe(
+      CliArgument.withDescription(
+        'SSH host (as in ~/.ssh/config, or user@hostname) to gather projects from',
+      ),
+    ),
+  },
+  ({ host }) => ExitCodeHandler.codeFromEffect(runController(host)),
+).pipe(
+  CliCommand.withDescription(
+    'Controller side: run qcode on a remote host over a background multiplexed ssh connection',
   ),
-  dedupStreamHashedSimple,
 )
 
-export const hyperlink = (uri: string, text: string) =>
-  `\x1b]8;;${uri}\x1b\\${text}\x1b]8;;\x1b\\`
-
-const ansiBlue = (s: string) => `\x1b[34m${s}\x1b[0m`
-const ansiGreen = (s: string) => `\x1b[32m${s}\x1b[0m`
-
-export const fzfPrettyCandidates = vscodeArgCandidates.pipe(
-  Stream.mapEffect(vscodeArgCandidate =>
-    Path.Path.useSync(path => ({
-      path: path.relative(PROJECTS_DIR, vscodeArgCandidate),
-      isDir: vscodeArgCandidate.endsWith('/'),
-    })),
+const provideCommand = CliCommand.make('provide', {}, () =>
+  ExitCodeHandler.codeFromEffect(runProvider),
+).pipe(
+  CliCommand.withDescription(
+    'Provider side: executed on the remote host to serve project data (invoked automatically by the controller)',
   ),
-  Stream.map(({ isDir, path }) => {
-    const color = isDir ? ansiBlue : ansiGreen
-    const icon = isDir ? DIR_ICON : WORKSPACE_ICON
-    return hyperlink(`file://${path}`, color(`${icon} ${path}\n`))
-  }),
 )
 
-// fzf replaces {2} with the raw relative path (second space-delimited field),
-// while the first icon is discarded.
-export const PREVIEW_CMD = `\
-path=${PROJECTS_DIR}/{2}
-if [ -d "$path" ]; then
-  cd "$path"
-  for file in ${README_FILES.join(' ')}; do
-    if [ -f "$file" ]; then
-      PAGER="" bat --style=plain --color=always "$file"
-      echo
-      break
-    fi
-  done
-  echo
-  eza -labgM --group-directories-first --no-time --octal-permissions \\
-      --classify=always --icons=always --color-scale=size \\
-      --color-scale-mode=gradient --color=always --hyperlink \\
-      --smart-group --no-quotes -h ./
-else
-  bat --style=plain --language=json --color=always "$path"
-fi`
+export const cli = CliCommand.make('qcode', {}, () =>
+  ExitCodeHandler.codeFromEffect(localMode),
+).pipe(
+  CliCommand.withDescription(
+    'Fuzzy project opener for VS Code. With no subcommand, searches ~/projects on this machine.',
+  ),
+  CliCommand.withSubcommands([remoteCommand, provideCommand]),
+)
 
+// Built explicitly from the minimal set of services actually used, so the
+// bundle doesn't drag in layers we never touch. The first three
+// lines are the original local-mode layer; Terminal + Stdio are added because
+// the CLI runner (`Command.run`) reads argv/help through them, and FileSystem
+// is surfaced in the output because remote mode reads/writes the cache.
+// TODO: experimentally test if removing any of them possible
 const AppLayer = BunChildProcessSpawner.layer.pipe(
-  Layer.provide(BunFileSystem.layer),
   Layer.provideMerge(BunPath.layer),
-)
-
-export const program = Effect.gen(function* () {
-  if (yield* areSomeDependenciesMissing) return 1
-
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-
-  const fzfProcess = yield* ChildProcess.make(
-    'fzf',
-    [
-      '--ansi',
-      '--delimiter= ',
-      '--preview-window=50%',
-      `--preview=${PREVIEW_CMD}`,
-    ],
-    { stderr: 'inherit' },
-  ).pipe(
-    spawner.spawn,
-    Effect.tapError(
-      logErrorOnNotFound(
-        'Fuzzy finder (`fzf` binary) is not found. Read more here: https://github.com/junegunn/fzf.',
-      ),
-    ),
-  )
-
-  const [fzfExitCode, selectedLine] = yield* Effect.all(
-    [
-      fzfProcess.exitCode,
-      fzfProcess.stdout.pipe(Stream.decodeText, Stream.mkString),
-      Stream.run(Stream.encodeText(fzfPrettyCandidates), fzfProcess.stdin),
-    ],
-    { concurrency: 'unbounded' },
-  )
-
-  if ((fzfExitCode as number) === 130) {
-    yield* Effect.log('fzf canceled by user')
-    return 0
-  } else if ((fzfExitCode as number) !== 0) {
-    yield* Effect.logError('fzf exited with non-zero code: ', fzfExitCode)
-    return 1
-  }
-
-  const relativePath = selectedLine.split(' ')[1]?.trim()
-
-  if (!relativePath) {
-    yield* Effect.logError('failed to parse relative path returned by fzf')
-    return 1
-  }
-
-  const path = yield* Path.Path
-
-  const vscodeLauncherExitCode = yield* pipe(
-    ChildProcess.make('code', [path.join(PROJECTS_DIR, relativePath)], {
-      stdout: 'inherit',
-      stderr: 'inherit',
-    }),
-    spawner.exitCode,
-    Effect.tapError(
-      logErrorOnNotFound(
-        'VS Code (`code` binary) is not found. Are you using VS Code Insiders?',
-      ),
-    ),
-  )
-
-  if ((vscodeLauncherExitCode as number) !== 0) {
-    yield* Effect.logError(
-      'vs code launcher exited with non-zero code: ',
-      vscodeLauncherExitCode,
-    )
-
-    return 1
-  }
-
-  return 0
-}).pipe(
-  Effect.scoped,
-  Effect.provide(AppLayer),
-  Effect.withSpan(import.meta.file),
+  Layer.provideMerge(BunTerminal.layer),
+  Layer.provideMerge(BunStdio.layer),
+  Layer.provideMerge(BunFileSystem.layer),
+  Layer.provideMerge(ExitCodeHandler.layer),
 )
 
 if (import.meta.main)
-  BunRuntime.runMain(program, {
-    teardown: (exit, onExit) => {
-      onExit(
-        !Exit.isSuccess(exit) || typeof exit.value !== 'number'
-          ? 1
-          : exit.value,
-      )
-    },
-  })
+  pipe(
+    CliCommand.run(cli, { version: '4.0.0' }),
+    Effect.andThen(ExitCodeHandler.await),
+    Effect.provide(AppLayer),
+    BunRuntime.runMain({
+      teardown: (exit, onExit) => {
+        onExit(
+          !Exit.isSuccess(exit) || typeof exit.value !== 'number'
+            ? 1
+            : exit.value,
+        )
+      },
+    }),
+  )
