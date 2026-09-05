@@ -89,17 +89,19 @@ export const find = (args: string) => {
   )
 }
 
+// -H to follow if the "projects" is a symlink somewhere
+
 // SPACES around parentheses are important!!
 export const gitAndVsCodeDirPaths = find(
-  `-type d ( ${PRUNE_ARGS} ) -prune -o -type d ( -name .git -o -name .vscode ) -prune -print`,
+  `-H -type d ( ${PRUNE_ARGS} ) -prune -o -type d ( -name .git -o -name .vscode ) -prune -print`,
 )
 
 export const packageJsonAndMiseTomlAndCodeWorkspacePaths = find(
-  `-type d ( ${PRUNE_ARGS} -o -name .git ) -prune -o -type f ( -name package.json -o -name mise.toml -o -name *.code-workspace ) -print`,
+  `-H -type d ( ${PRUNE_ARGS} -o -name .git ) -prune -o -type f ( -name package.json -o -name mise.toml -o -name *.code-workspace ) -print`,
 )
 
 export const dirAndCodeWorkspacePathsInProjectsRoot = find(
-  '-maxdepth 1 -mindepth 1 ( -type d -o -name *.code-workspace )',
+  '-H -maxdepth 1 -mindepth 1 ( -type d -o -name *.code-workspace )',
 )
 
 const dedupStreamHashedSimple = <A, E, R>(
