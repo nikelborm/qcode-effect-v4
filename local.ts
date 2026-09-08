@@ -25,6 +25,7 @@ export const PRUNE_DIRS = [
   ['temp_full_cache', '.docusaurus', 'coverage', 'generated', 'release', 'tmp'],
   ['cache', 'classes', 'third_party', 'testing', 'storybook-static', 'dist'],
   ['.pnpm-store', '.stryker-tmp', 'logs', 'output'],
+  // TODO: potentially add garbage '.agents', '.better-agents', '.context' etc
   // the last 3 here because they're too heavy. They will still be listed anyway
   // because they're in root directory, we just wont search for subdirectories
   ['firefox', 'mdn-content', 'base-ui'],
@@ -36,7 +37,12 @@ export const README_FILES = ['README', 'Readme', 'readme']
   )
   .flatMap(r => ['', 'md', 'txt'].map(ext => (ext ? r + '.' + ext : r)))
 
-export const PRUNE_ARGS = PRUNE_DIRS.map(e => `-name ${e}`).join(' -o ')
+const dirMarkers = ['.git', '.vscode']
+const fileMarkers = ['package.json', 'mise.toml', 'Cargo.toml']
+
+const joinNames = (names: string[]) => names.map(e => `-name ${e}`).join(' -o ')
+
+export const PRUNE_ARGS = joinNames(PRUNE_DIRS)
 
 // TODO: add error message queue, so that it doesn't mess with fzf's on screen output
 
@@ -72,7 +78,8 @@ export const find = (args: string) => {
   const stream = (main: string, message: string) =>
     ChildProcessSpawner.ChildProcessSpawner.useSync(spawner =>
       spawner.streamLines(
-        ChildProcess.make(main, [PROJECTS_DIR, ...args.split(' ')]),
+        // -H to follow if the "projects" is a symlink somewhere
+        ChildProcess.make(main, ['-H', PROJECTS_DIR, ...args.split(' ')]),
       ),
     ).pipe(Stream.unwrap, Stream.tapError(logErrorOnNotFound(message)))
 
@@ -89,19 +96,20 @@ export const find = (args: string) => {
   )
 }
 
-// -H to follow if the "projects" is a symlink somewhere
+const dirMarkerArgs = joinNames(dirMarkers)
+const fileMarkerArgs = joinNames(fileMarkers)
 
 // SPACES around parentheses are important!!
 export const gitAndVsCodeDirPaths = find(
-  `-H -type d ( ${PRUNE_ARGS} ) -prune -o -type d ( -name .git -o -name .vscode ) -prune -print`,
+  `-type d ( ${PRUNE_ARGS} ) -prune -o -type d ( ${dirMarkerArgs} ) -prune -print`,
 )
 
 export const packageJsonAndMiseTomlAndCodeWorkspacePaths = find(
-  `-H -type d ( ${PRUNE_ARGS} -o -name .git ) -prune -o -type f ( -name package.json -o -name mise.toml -o -name *.code-workspace ) -print`,
+  `-type d ( ${PRUNE_ARGS} -o ${dirMarkerArgs} ) -prune -o -type f ( ${fileMarkerArgs} -o -name *.code-workspace ) -print`,
 )
 
 export const dirAndCodeWorkspacePathsInProjectsRoot = find(
-  '-H -maxdepth 1 -mindepth 1 ( -type d -o -name *.code-workspace )',
+  `-maxdepth 1 -mindepth 1 ( -type d -o -name *.code-workspace )`,
 )
 
 const dedupStreamHashedSimple = <A, E, R>(
@@ -116,6 +124,13 @@ const dedupStreamHashedSimple = <A, E, R>(
         : [HashSet.add(alreadyEmitted, value), [value]],
   )
 
+const endsWithSpecialChildRegExp = new RegExp(
+  '/(' +
+    [...dirMarkers, ...fileMarkers].map(RegExp.escape).join('|') +
+    ')(/?)$',
+)
+const anythingThatEndsWithSymbolsOtherThanSlashRegExp = /[^/]+$/
+
 export const vscodeArgCandidates = pipe(
   [
     gitAndVsCodeDirPaths,
@@ -127,12 +142,15 @@ export const vscodeArgCandidates = pipe(
     currentLine.endsWith('.code-workspace')
       ? currentLine
       : currentLine
-          .replace('package.json', '')
-          .replace('mise.toml', '')
-          .replace('.git', '')
-          .replace('.vscode', '')
-          // adds slash at the end
-          .replace(/[^/]+$/, '$&/'),
+          // removes the special dir/file that's been found inside, leaving only
+          // the part of the parent dir's path and preserves trailing slash if
+          // the original had one
+          .replace(endsWithSpecialChildRegExp, '$2')
+          // adds slash at the end, but only to those without it. Important
+          // thing os that something doesn't come with special child inside.
+          // When listing direct children of ./projects, it gives just folder
+          // names, which is the reason why these 2 regexps can't be combined
+          .replace(anythingThatEndsWithSymbolsOtherThanSlashRegExp, '$&/'),
   ),
   dedupStreamHashedSimple,
 )
@@ -171,10 +189,10 @@ if [ -d "$path" ]; then
     fi
   done
   echo
-  eza -labgM --group-directories-first --no-time --octal-permissions \\
-      --classify=always --icons=always --color-scale=size \\
-      --color-scale-mode=gradient --color=always --hyperlink \\
-      --smart-group --no-quotes -h ./
+  eza --long --all --binary --group --mounts --group-directories-first \\
+    --no-time --octal-permissions --classify=always --icons=always \\
+    --color-scale=size --color-scale-mode=gradient --color=always --hyperlink \\
+    --smart-group --no-quotes --header ./
 else
   bat --style=plain --language=json --color=always "$path"
 fi`

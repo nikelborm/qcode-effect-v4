@@ -106,6 +106,8 @@ const AppLayer = BunChildProcessSpawner.layer.pipe(
   Layer.provideMerge(ExitCodeHandler.layer),
 )
 
+// TODO: add special mode so that it doesn't immediately close the window on
+// crash, hiding the error, and waits for any input
 if (import.meta.main)
   pipe(
     CliCommand.run(cli, { version: '4.0.0' }),
