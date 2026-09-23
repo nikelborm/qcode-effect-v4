@@ -24,7 +24,8 @@ export const PRUNE_DIRS = [
   ['specs', 'target', 'temp', 'test', 'dist-types', 'tests', 'vendor', 'venv'],
   ['temp_full_cache', '.docusaurus', 'coverage', 'generated', 'release', 'tmp'],
   ['cache', 'classes', 'third_party', 'testing', 'storybook-static', 'dist'],
-  ['.pnpm-store', '.stryker-tmp', 'logs', 'output'],
+  ['.pnpm-store', '.stryker-tmp', 'logs', 'output', 'zig-pkg', '.zig-cache'],
+  ['zig-out'],
   // TODO: potentially add garbage '.agents', '.better-agents', '.context' etc
   // the last 3 here because they're too heavy. They will still be listed anyway
   // because they're in root directory, we just wont search for subdirectories
@@ -38,7 +39,14 @@ export const README_FILES = ['README', 'Readme', 'readme']
   .flatMap(r => ['', 'md', 'txt'].map(ext => (ext ? r + '.' + ext : r)))
 
 const dirMarkers = ['.git', '.vscode']
-const fileMarkers = ['package.json', 'mise.toml', 'Cargo.toml']
+const fileMarkers = [
+  'package.json',
+  'mise.toml',
+  'tsconfig.json',
+  'Cargo.toml',
+  'pyproject.toml',
+  'setup.py',
+]
 
 const joinNames = (names: string[]) => names.map(e => `-name ${e}`).join(' -o ')
 
