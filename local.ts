@@ -210,6 +210,10 @@ export const localMode = Effect.gen(function* () {
 
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
+  // Keep fzf in our foreground process group so the terminal delivers
+  // SIGWINCH (resize) and job-control signals straight to it — exactly as
+  // when run directly from the shell. Effect defaults to `detached: true`
+  // (new session), which would isolate fzf from those signals.
   const fzfProcess = yield* ChildProcess.make(
     'fzf',
     [
@@ -218,7 +222,7 @@ export const localMode = Effect.gen(function* () {
       '--preview-window=50%',
       `--preview=${PREVIEW_CMD}`,
     ],
-    { stderr: 'inherit' },
+    { stderr: 'inherit', detached: false },
   ).pipe(
     spawner.spawn,
     Effect.tapError(
