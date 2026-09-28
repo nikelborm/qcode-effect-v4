@@ -3,6 +3,7 @@
 // Local mode — the default: scan ~/projects, pick with fzf, open in VS Code.
 
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import { pipe } from 'effect/Function'
 import * as HashSet from 'effect/HashSet'
 import * as Path from 'effect/Path'
@@ -257,9 +258,15 @@ export const localMode = Effect.gen(function* () {
   }
 
   const path = yield* Path.Path
+  const fs = yield* FileSystem.FileSystem
+
+  const linkedPath = path.join(PROJECTS_DIR, relativePath)
+  const vscodePath = yield* fs
+    .realPath(linkedPath)
+    .pipe(Effect.orElseSucceed(() => linkedPath))
 
   const vscodeLauncherExitCode = yield* pipe(
-    ChildProcess.make('code', [path.join(PROJECTS_DIR, relativePath)], {
+    ChildProcess.make('code', [vscodePath], {
       stdout: 'inherit',
       stderr: 'inherit',
     }),
