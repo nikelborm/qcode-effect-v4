@@ -2,7 +2,7 @@
 
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
-import { ExitCode } from 'effect/unstable/process/ChildProcessSpawner'
+import { ExitCode } from 'effect/process/ChildProcessSpawner'
 
 import { MARKER_READY } from './common.ts'
 

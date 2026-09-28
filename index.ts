@@ -11,14 +11,14 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime'
 import * as BunStdio from '@effect/platform-bun/BunStdio'
 import * as BunTerminal from '@effect/platform-bun/BunTerminal'
 import * as Context from 'effect/Context'
+import * as CliArgument from 'effect/cli/Argument'
+import * as CliCommand from 'effect/cli/Command'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import { pipe } from 'effect/Function'
 import * as Layer from 'effect/Layer'
-import * as CliArgument from 'effect/unstable/cli/Argument'
-import * as CliCommand from 'effect/unstable/cli/Command'
-import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 
 import { localMode } from './local.ts'
 import { runController } from './remote-controller.ts'
@@ -62,7 +62,7 @@ class ExitCodeHandler extends Context.Service<ExitCodeHandler>()(
 const remoteCommand = CliCommand.make(
   'remote',
   {
-    host: CliArgument.string('host').pipe(
+    host: CliArgument.String('host').pipe(
       CliArgument.withDescription(
         'SSH host (as in ~/.ssh/config, or user@hostname) to gather projects from',
       ),
