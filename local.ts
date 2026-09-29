@@ -133,7 +133,7 @@ const dedupStreamHashedSimple = <A, E, R>(
         : [HashSet.add(alreadyEmitted, value), [value]],
   )
 
-const endsWithSpecialChildRegExp = new RegExp(
+const endsWithMarkerRegExp = new RegExp(
   '/(' +
     [...dirMarkers, ...fileMarkers].map(RegExp.escape).join('|') +
     ')(/?)$',
@@ -154,9 +154,9 @@ export const vscodeArgCandidates = pipe(
           // removes the special dir/file that's been found inside, leaving only
           // the part of the parent dir's path and preserves trailing slash if
           // the original had one
-          .replace(endsWithSpecialChildRegExp, '$2')
+          .replace(endsWithMarkerRegExp, '$2')
           // adds slash at the end, but only to those without it. Important
-          // thing os that something doesn't come with special child inside.
+          // thing is that lines don't always contain markers.
           // When listing direct children of ./projects, it gives just folder
           // names, which is the reason why these 2 regexps can't be combined
           .replace(anythingThatEndsWithSymbolsOtherThanSlashRegExp, '$&/'),
@@ -170,19 +170,15 @@ export const hyperlink = (uri: string, text: string) =>
 const ansiBlue = (s: string) => `\x1b[34m${s}\x1b[0m`
 const ansiGreen = (s: string) => `\x1b[32m${s}\x1b[0m`
 
-export const fzfPrettyCandidates = vscodeArgCandidates.pipe(
-  Stream.mapEffect(vscodeArgCandidate =>
-    Path.Path.useSync(path => ({
-      path: path.relative(PROJECTS_DIR, vscodeArgCandidate),
-      isDir: vscodeArgCandidate.endsWith('/'),
-    })),
-  ),
-  Stream.map(({ isDir, path }) => {
+export const fzfPrettyCandidates = Path.Path.useSync(pathService =>
+  Stream.map(vscodeArgCandidates, vscodeArgCandidate => {
+    const path = pathService.relative(PROJECTS_DIR, vscodeArgCandidate)
+    const isDir = vscodeArgCandidate.endsWith('/')
     const color = isDir ? ansiBlue : ansiGreen
     const icon = isDir ? DIR_ICON : WORKSPACE_ICON
     return hyperlink(`file://${path}`, color(`${icon} ${path}\n`))
   }),
-)
+).pipe(Stream.unwrap)
 
 // fzf replaces {2} with the raw relative path (second space-delimited field),
 // while the first icon is discarded.
