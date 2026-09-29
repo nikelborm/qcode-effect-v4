@@ -170,13 +170,19 @@ export const hyperlink = (uri: string, text: string) =>
 const ansiBlue = (s: string) => `\x1b[34m${s}\x1b[0m`
 const ansiGreen = (s: string) => `\x1b[32m${s}\x1b[0m`
 
+// the tab delimiter is to support directories with space in their name
+const icon_path_delimiter = '\t'
+
 export const fzfPrettyCandidates = Path.Path.useSync(pathService =>
   Stream.map(vscodeArgCandidates, vscodeArgCandidate => {
     const path = pathService.relative(PROJECTS_DIR, vscodeArgCandidate)
     const isDir = vscodeArgCandidate.endsWith('/')
     const color = isDir ? ansiBlue : ansiGreen
     const icon = isDir ? DIR_ICON : WORKSPACE_ICON
-    return hyperlink(`file://${path}`, color(`${icon} ${path}\n`))
+    return hyperlink(
+      `file://${path}`,
+      color([icon, icon_path_delimiter, path, `\n`].join('')),
+    )
   }),
 ).pipe(Stream.unwrap)
 
@@ -215,7 +221,14 @@ export const localMode = Effect.gen(function* () {
     'fzf',
     [
       '--ansi',
-      '--delimiter= ',
+      // so that tab is rendered as one space
+      '--tabstop=1',
+      // delimiter between icon and path
+      `--delimiter=${icon_path_delimiter}`,
+      // fzf prints to stdout only path
+      '--accept-nth=2..',
+      // searches only path, ignores icon
+      '--nth=2..',
       '--preview-window=50%',
       `--preview=${PREVIEW_CMD}`,
     ],
@@ -246,7 +259,7 @@ export const localMode = Effect.gen(function* () {
     return ChildProcessSpawner.ExitCode(1)
   }
 
-  const relativePath = selectedLine.split(' ')[1]?.trim()
+  const relativePath = selectedLine.trim()
 
   if (!relativePath) {
     yield* Effect.logError('failed to parse relative path returned by fzf')
